@@ -4,7 +4,13 @@ const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    transports: ["websocket"]
+});
+
+// 👇 AJOUT ICI
+io.engine.opts.pingTimeout = 5000;
+io.engine.opts.pingInterval = 2000;
 
 app.use(express.static("public"));
 
@@ -116,8 +122,14 @@ setInterval(() => {
         let r = rooms[id];
         let b = r.ball;
 
+        // 👉 si pas en jeu → on envoie juste l'état
         if (!r.started || r.winner) {
-            io.to(id).emit("state", r);
+            io.to(id).emit("state", {
+                ball: r.ball,
+                paddles: r.paddles,
+                score: r.score,
+                winner: r.winner
+            });
             continue;
         }
 
@@ -128,13 +140,13 @@ setInterval(() => {
         b.x += b.vx;
         b.y += b.vy;
 
-        // rebonds
+        // rebonds haut/bas
         if (b.y <= 0) { b.y = 0; b.vy *= -1; }
         if (b.y >= 1) { b.y = 1; b.vy *= -1; }
 
-        // 🧱 HITBOX PLUS PRÉCISE (corrige "trop grande")
-        const margin = 0.02; // 🔥 zone réelle de collision réduite
+        const margin = 0.02;
 
+        // collision gauche
         if (
             b.x <= 0.03 &&
             b.y >= r.paddles.left - PADDLE_HALF + margin &&
@@ -144,6 +156,7 @@ setInterval(() => {
             b.vx = Math.abs(b.vx) * speedUp;
         }
 
+        // collision droite
         if (
             b.x >= 0.97 &&
             b.y >= r.paddles.right - PADDLE_HALF + margin &&
@@ -157,7 +170,7 @@ setInterval(() => {
         b.vx = Math.max(-maxSpeed, Math.min(maxSpeed, b.vx));
         b.vy = Math.max(-maxSpeed, Math.min(maxSpeed, b.vy));
 
-        // score gauche
+        // score
         if (b.x < 0 && !r.scoredLock) {
             r.score.right++;
             r.flashTime = Date.now();
@@ -165,7 +178,6 @@ setInterval(() => {
             resetBall(r, "right");
         }
 
-        // score droite
         if (b.x > 1 && !r.scoredLock) {
             r.score.left++;
             r.flashTime = Date.now();
@@ -180,10 +192,15 @@ setInterval(() => {
         if (r.score.left >= 10) r.winner = "left";
         if (r.score.right >= 10) r.winner = "right";
 
-        io.to(id).emit("state", r);
+        // 👉 envoi UNIQUE (propre)
+        io.to(id).emit("state", {
+            ball: r.ball,
+            paddles: r.paddles,
+            score: r.score,
+            winner: r.winner
+        });
     }
 }, 1000 / 60);
-
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
