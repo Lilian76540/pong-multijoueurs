@@ -1,253 +1,137 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
+const socket = io();
 
-const app = express();
-const server = http.createServer(app);
-
-const io = new Server(server, {
-    transports: ["websocket"]
-});
-
-// ⚡ stabilité réseau
-io.engine.opts.pingTimeout = 5000;
-io.engine.opts.pingInterval = 2000;
-
-app.use(express.static("public"));
-
-let rooms = {};
+let state = null;
+let roomId = null;
+let role = null;
 
 // =====================
-// 🧠 CONSTANTES
+// 🎮 ELEMENTS HTML
 // =====================
-const PADDLE_HEIGHT = 0.18;
-const PADDLE_HALF = PADDLE_HEIGHT / 2;
+const canvas = document.querySelector("canvas");
+const ctx = canvas.getContext("2d");
 
-// =====================
-// 🧱 CREATE ROOM
-// =====================
-function createRoom(id) {
-    rooms[id] = {
-        players: [],
-        ball: {
-            x: 0.5,
-            y: 0.5,
-            vx: 0,
-            vy: 0
-        },
-        paddles: {
-            left: 0.5,
-            right: 0.5
-        },
-        score: {
-            left: 0,
-            right: 0
-        },
-        winner: null,
-        started: false,
-        scoredLock: false,
-        firstServe: Math.random() > 0.5 ? "left" : "right",
-        ready: {}
-    };
-}
+const input = document.getElementById("roomCode");
+const button = document.getElementById("playBtn");
+const status = document.getElementById("status");
+
+// canvas taille
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 
 // =====================
-// ⚽ RESET BALL
+// 🚪 REJOINDRE SALON
 // =====================
-function resetBall(r, last) {
-    r.ball.x = 0.5;
-    r.ball.y = 0.5;
+button.addEventListener("click", () => {
+    if (!input.value) return;
 
-    let dir = (!last)
-        ? (r.firstServe === "left" ? -1 : 1)
-        : (last === "left" ? 1 : -1);
+    roomId = input.value;
 
-    const baseSpeed = 0.006;
+    socket.emit("createRoom", roomId);
 
-    r.ball.vx = baseSpeed * dir;
-    r.ball.vy = baseSpeed * (Math.random() > 0.5 ? 1 : -1);
-
-    r.scoredLock = false;
-}
-
-// =====================
-// 🔌 SOCKET
-// =====================
-io.on("connection", (socket) => {
-
-    // =====================
-    // 🎮 CREATE / JOIN ROOM
-    // =====================
-    socket.on("createRoom", (roomId) => {
-        if (!roomId) return;
-
-        if (!rooms[roomId]) createRoom(roomId);
-
-        let r = rooms[roomId];
-
-        // ❌ empêche doublon joueur
-        if (!r.players.includes(socket.id)) {
-            r.players.push(socket.id);
-        }
-
-        socket.join(roomId);
-        socket.roomId = roomId;
-
-        socket.emit("joined", {
-            roomId,
-            role: r.players[0] === socket.id ? "left" : "right"
-        });
-
-        console.log("ROOM:", roomId, "players:", r.players.length);
-
-        // ✅ START FIABLE
-        if (r.players.length === 2) {
-            r.started = true;
-            resetBall(r, null);
-        }
-    });
-
-    // =====================
-    // 🎮 MOVE PADDLE
-    // =====================
-    socket.on("movePaddle", (data) => {
-        const r = rooms[socket.roomId];
-        if (!r) return;
-
-        const y = Math.max(0, Math.min(1, data.y));
-
-        if (r.players[0] === socket.id) r.paddles.left = y;
-        if (r.players[1] === socket.id) r.paddles.right = y;
-    });
-
-    // =====================
-    // 🔄 RESTART
-    // =====================
-    socket.on("restartGame", () => {
-        const r = rooms[socket.roomId];
-        if (!r) return;
-
-        r.ready[socket.id] = true;
-
-        if (Object.keys(r.ready).length === r.players.length) {
-            r.score.left = 0;
-            r.score.right = 0;
-            r.winner = null;
-            r.ready = {};
-            resetBall(r, null);
-        }
-    });
-
-    // =====================
-    // ❌ DISCONNECT FIX
-    // =====================
-    socket.on("disconnect", () => {
-        const roomId = socket.roomId;
-        if (!roomId || !rooms[roomId]) return;
-
-        let r = rooms[roomId];
-
-        r.players = r.players.filter(id => id !== socket.id);
-
-        if (r.players.length === 0) {
-            delete rooms[roomId];
-        }
-    });
+    status.innerText = "Connexion au serveur...";
 });
 
 // =====================
-// 🧠 GAME LOOP
+// 🔌 EVENTS SOCKET
 // =====================
-setInterval(() => {
-    for (let id in rooms) {
-        let r = rooms[id];
-        let b = r.ball;
 
-        // =====================
-        // ❌ pas commencé
-        // =====================
-        if (!r.started || r.winner) {
-            io.to(id).emit("state", {
-                ball: r.ball,
-                paddles: r.paddles,
-                score: r.score,
-                winner: r.winner
-            });
-            continue;
-        }
+// quand on rejoint la room
+socket.on("joined", (data) => {
+    role = data.role;
 
-        const speedUp = 1.03;
-        const maxSpeed = 0.02;
+    console.log("JOINED:", data);
 
-        // mouvement
-        b.x += b.vx;
-        b.y += b.vy;
+    status.innerText = "En attente d’un autre joueur...";
+});
 
-        // rebonds
-        if (b.y <= 0) { b.y = 0; b.vy *= -1; }
-        if (b.y >= 1) { b.y = 1; b.vy *= -1; }
+// erreur serveur
+socket.on("errorMsg", (msg) => {
+    alert(msg);
+});
 
-        const margin = 0.02;
+// état du jeu
+socket.on("state", (s) => {
+    state = s;
 
-        // collision gauche
-        if (
-            b.x <= 0.03 &&
-            b.y >= r.paddles.left - PADDLE_HALF + margin &&
-            b.y <= r.paddles.left + PADDLE_HALF - margin
-        ) {
-            b.x = 0.03;
-            b.vx = Math.abs(b.vx) * speedUp;
-        }
-
-        // collision droite
-        if (
-            b.x >= 0.97 &&
-            b.y >= r.paddles.right - PADDLE_HALF + margin &&
-            b.y <= r.paddles.right + PADDLE_HALF - margin
-        ) {
-            b.x = 0.97;
-            b.vx = -Math.abs(b.vx) * speedUp;
-        }
-
-        // limite vitesse
-        b.vx = Math.max(-maxSpeed, Math.min(maxSpeed, b.vx));
-        b.vy = Math.max(-maxSpeed, Math.min(maxSpeed, b.vy));
-
-        // score gauche
-        if (b.x < 0 && !r.scoredLock) {
-            r.score.right++;
-            r.scoredLock = true;
-            resetBall(r, "right");
-        }
-
-        // score droite
-        if (b.x > 1 && !r.scoredLock) {
-            r.score.left++;
-            r.scoredLock = true;
-            resetBall(r, "left");
-        }
-
-        if (b.x > 0.1 && b.x < 0.9) {
-            r.scoredLock = false;
-        }
-
-        if (r.score.left >= 10) r.winner = "left";
-        if (r.score.right >= 10) r.winner = "right";
-
-        // =====================
-        // 📡 SEND STATE
-        // =====================
-        io.to(id).emit("state", {
-            ball: r.ball,
-            paddles: r.paddles,
-            score: r.score,
-            winner: r.winner
-        });
+    // ⚡ gestion du texte "en attente"
+    if (!state.started) {
+        status.innerText = "En attente d’un autre joueur...";
+        return;
     }
-}, 1000 / 60);
+
+    if (state.winner) {
+        if (state.winner === "left") {
+            status.innerText = "Joueur gauche gagne 🎉";
+        } else {
+            status.innerText = "Joueur droite gagne 🎉";
+        }
+        return;
+    }
+
+    status.innerText = "En jeu 🎮";
+});
 
 // =====================
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => {
-    console.log("Serveur lancé sur le port " + PORT);
+// 🎮 CONTROLES
+// =====================
+document.addEventListener("mousemove", (e) => {
+    if (!roomId) return;
+
+    let y = e.clientY / window.innerHeight;
+
+    socket.emit("movePaddle", { y });
 });
+
+// =====================
+// 🎨 GAME LOOP
+// =====================
+function loop() {
+    requestAnimationFrame(loop);
+
+    if (!state) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // =====================
+    // ⚽ BALL
+    // =====================
+    ctx.fillStyle = "white";
+    ctx.fillRect(
+        state.ball.x * canvas.width,
+        state.ball.y * canvas.height,
+        10,
+        10
+    );
+
+    // =====================
+    // 🧱 PADDLES
+    // =====================
+    const paddleHeight = 120;
+
+    // gauche
+    ctx.fillRect(
+        20,
+        state.paddles.left * canvas.height - paddleHeight / 2,
+        10,
+        paddleHeight
+    );
+
+    // droite
+    ctx.fillRect(
+        canvas.width - 30,
+        state.paddles.right * canvas.height - paddleHeight / 2,
+        10,
+        paddleHeight
+    );
+
+    // =====================
+    // 🏆 SCORE
+    // =====================
+    ctx.fillStyle = "white";
+    ctx.font = "30px Arial";
+
+    ctx.fillText(state.score.left, canvas.width / 2 - 60, 50);
+    ctx.fillText(state.score.right, canvas.width / 2 + 40, 50);
+}
+
+loop();
