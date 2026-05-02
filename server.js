@@ -4,11 +4,12 @@ const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
     transports: ["websocket"]
 });
 
-// 👇 AJOUT ICI
+// ⚡ stabilité réseau
 io.engine.opts.pingTimeout = 5000;
 io.engine.opts.pingInterval = 2000;
 
@@ -16,10 +17,15 @@ app.use(express.static("public"));
 
 let rooms = {};
 
-// 🧠 RAQUETTE EXACTE (plus précise)
-const PADDLE_HEIGHT = 0.18; // ↓ légèrement réduit pour corriger "trop grand"
+// =====================
+// 🧠 CONSTANTES
+// =====================
+const PADDLE_HEIGHT = 0.18;
 const PADDLE_HALF = PADDLE_HEIGHT / 2;
 
+// =====================
+// 🧱 CREATE ROOM
+// =====================
 function createRoom(id) {
     rooms[id] = {
         players: [],
@@ -39,13 +45,15 @@ function createRoom(id) {
         },
         winner: null,
         started: false,
-        flashTime: 0,
         scoredLock: false,
         firstServe: Math.random() > 0.5 ? "left" : "right",
         ready: {}
     };
 }
 
+// =====================
+// ⚽ RESET BALL
+// =====================
 function resetBall(r, last) {
     r.ball.x = 0.5;
     r.ball.y = 0.5;
@@ -62,8 +70,14 @@ function resetBall(r, last) {
     r.scoredLock = false;
 }
 
+// =====================
+// 🔌 SOCKET
+// =====================
 io.on("connection", (socket) => {
 
+    // =====================
+    // 🎮 CREATE / JOIN ROOM
+    // =====================
     socket.on("createRoom", (roomId) => {
         if (!roomId) return;
 
@@ -71,26 +85,31 @@ io.on("connection", (socket) => {
 
         let r = rooms[roomId];
 
-        if (r.players.length >= 2) {
-            socket.emit("errorMsg", "Salon plein");
-            return;
+        // ❌ empêche doublon joueur
+        if (!r.players.includes(socket.id)) {
+            r.players.push(socket.id);
         }
 
-        r.players.push(socket.id);
         socket.join(roomId);
         socket.roomId = roomId;
 
         socket.emit("joined", {
             roomId,
-            role: r.players.length === 1 ? "left" : "right"
+            role: r.players[0] === socket.id ? "left" : "right"
         });
 
+        console.log("ROOM:", roomId, "players:", r.players.length);
+
+        // ✅ START FIABLE
         if (r.players.length === 2) {
             r.started = true;
             resetBall(r, null);
         }
     });
 
+    // =====================
+    // 🎮 MOVE PADDLE
+    // =====================
     socket.on("movePaddle", (data) => {
         const r = rooms[socket.roomId];
         if (!r) return;
@@ -101,6 +120,9 @@ io.on("connection", (socket) => {
         if (r.players[1] === socket.id) r.paddles.right = y;
     });
 
+    // =====================
+    // 🔄 RESTART
+    // =====================
     socket.on("restartGame", () => {
         const r = rooms[socket.roomId];
         if (!r) return;
@@ -115,14 +137,35 @@ io.on("connection", (socket) => {
             resetBall(r, null);
         }
     });
+
+    // =====================
+    // ❌ DISCONNECT FIX
+    // =====================
+    socket.on("disconnect", () => {
+        const roomId = socket.roomId;
+        if (!roomId || !rooms[roomId]) return;
+
+        let r = rooms[roomId];
+
+        r.players = r.players.filter(id => id !== socket.id);
+
+        if (r.players.length === 0) {
+            delete rooms[roomId];
+        }
+    });
 });
 
+// =====================
+// 🧠 GAME LOOP
+// =====================
 setInterval(() => {
     for (let id in rooms) {
         let r = rooms[id];
         let b = r.ball;
 
-        // 👉 si pas en jeu → on envoie juste l'état
+        // =====================
+        // ❌ pas commencé
+        // =====================
         if (!r.started || r.winner) {
             io.to(id).emit("state", {
                 ball: r.ball,
@@ -140,7 +183,7 @@ setInterval(() => {
         b.x += b.vx;
         b.y += b.vy;
 
-        // rebonds haut/bas
+        // rebonds
         if (b.y <= 0) { b.y = 0; b.vy *= -1; }
         if (b.y >= 1) { b.y = 1; b.vy *= -1; }
 
@@ -170,17 +213,16 @@ setInterval(() => {
         b.vx = Math.max(-maxSpeed, Math.min(maxSpeed, b.vx));
         b.vy = Math.max(-maxSpeed, Math.min(maxSpeed, b.vy));
 
-        // score
+        // score gauche
         if (b.x < 0 && !r.scoredLock) {
             r.score.right++;
-            r.flashTime = Date.now();
             r.scoredLock = true;
             resetBall(r, "right");
         }
 
+        // score droite
         if (b.x > 1 && !r.scoredLock) {
             r.score.left++;
-            r.flashTime = Date.now();
             r.scoredLock = true;
             resetBall(r, "left");
         }
@@ -192,7 +234,9 @@ setInterval(() => {
         if (r.score.left >= 10) r.winner = "left";
         if (r.score.right >= 10) r.winner = "right";
 
-        // 👉 envoi UNIQUE (propre)
+        // =====================
+        // 📡 SEND STATE
+        // =====================
         io.to(id).emit("state", {
             ball: r.ball,
             paddles: r.paddles,
@@ -201,8 +245,9 @@ setInterval(() => {
         });
     }
 }, 1000 / 60);
-const PORT = process.env.PORT || 3000;
 
+// =====================
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
     console.log("Serveur lancé sur le port " + PORT);
 });
