@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Pong Multijoueur</title>
+
+<style>
+body {
+    margin: 0;
+    overflow: hidden;
+    background: black;
+    font-family: Arial;
+}
+
+canvas {
+    display: block;
+}
+</style>
+</head>
+
+<body>
+
+<input id="room" placeholder="Code salon"
+style="position:absolute;top:10px;left:10px;z-index:10">
+
+<button onclick="joinRoom()"
+style="position:absolute;top:10px;left:180px;z-index:10">
+Jouer
+</button>
+
+<div id="info"
+style="position:absolute;top:40px;left:10px;z-index:10;color:white"></div>
+
+<canvas id="game"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let state = null;
+let paddleY = 0.5;
+let keys = {};
+
+// 🎮 FULLSCREEN
+function goFullscreen(){
+    const el = document.documentElement;
+    if (el.requestFullscreen) el.requestFullscreen();
+}
+document.addEventListener("click", goFullscreen, { once: true });
+
+// 📏 resize
+function resize(){
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+function joinRoom(){
+    socket.emit("createRoom", document.getElementById("room").value);
+}
+
+socket.on("joined", d=>{
+    info.innerHTML = "Salon : " + d.roomId + " | rôle : " + d.role;
+});
+
+socket.on("state", s=>{
+    state = s;
+});
+
+document.addEventListener("keydown", e => keys[e.key] = true);
+document.addEventListener("keyup", e => keys[e.key] = false);
+
+// 🎮 contrôles
+function controls(){
+    const speed = 0.02;
+
+    if(keys["ArrowUp"]) paddleY -= speed;
+    if(keys["ArrowDown"]) paddleY += speed;
+
+    paddleY = Math.max(0, Math.min(1, paddleY));
+
+    socket.emit("movePaddle", { y: paddleY });
+
+    requestAnimationFrame(controls);
+}
+controls();
+
+// 🖱️ REJOUER FIABLE
+canvas.addEventListener("click", () => {
+    if (!state || !state.winner) return;
+
+    socket.emit("restartGame");
+});
+
+// 🎨 DRAW
+function draw(){
+    requestAnimationFrame(draw);
+
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    if(!state){
+        ctx.fillStyle="white";
+        ctx.font="40px Arial";
+        ctx.fillText("En attente...", W/2-100, H/2);
+        return;
+    }
+
+    // ⚡ VICTOIRE
+    if(state.winner){
+
+        ctx.fillStyle="black";
+        ctx.globalAlpha=0.85;
+        ctx.fillRect(0,0,W,H);
+        ctx.globalAlpha=1;
+
+        ctx.fillStyle="white";
+        ctx.font="50px Arial";
+
+        ctx.fillText(
+            state.winner==="left"?"GAUCHE GAGNE":"DROITE GAGNE",
+            W/2-220,
+            H/2
+        );
+
+        ctx.font="25px Arial";
+        ctx.fillText(
+            "Clique pour rejouer (2 joueurs requis)",
+            W/2-220,
+            H/2+60
+        );
+
+        return;
+    }
+
+    // ligne centrale
+    ctx.fillStyle="white";
+    ctx.fillRect(W/2,0,4,H);
+
+    // balle
+    ctx.beginPath();
+    ctx.arc(state.ball.x * W, state.ball.y * H, 10, 0, Math.PI*2);
+    ctx.fill();
+
+    // raquettes
+    const paddleH = 120;
+
+    ctx.fillRect(20, state.paddles.left * H - paddleH/2, 10, paddleH);
+    ctx.fillRect(W-30, state.paddles.right * H - paddleH/2, 10, paddleH);
+
+    // score
+    ctx.font="40px Arial";
+    ctx.fillText(state.score.left, W/2-60,60);
+    ctx.fillText(state.score.right, W/2+40,60);
+}
+
+draw();
+</script>
+
+</body>
+</html>
