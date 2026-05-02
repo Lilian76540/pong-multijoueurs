@@ -239,7 +239,7 @@ setInterval(() => {
             started: r.started
         });
     }
-}, 1000 / 60);
+}, 1000 / 30);
 
 // =====================
 const PORT = process.env.PORT || 3000;
