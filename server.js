@@ -172,8 +172,8 @@ setInterval(() => {
             continue;
         }
 
-        const speedUp = 1.03;
-        const maxSpeed = 0.02;
+        const speedUp = 1.08;
+        const maxSpeed = 4.0;
 
         // movement
         b.x += b.vx;
